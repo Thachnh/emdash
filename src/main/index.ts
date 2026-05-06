@@ -18,6 +18,7 @@ import { githubConnectionService } from './core/github/services/github-connectio
 import { projectManager } from './core/projects/project-manager';
 import { projectSettingsService } from './core/projects/settings/project-settings-service';
 import { prSyncScheduler } from './core/pull-requests/pr-sync-scheduler';
+import { remoteSyncScheduler } from './core/remote-sync/remote-sync-scheduler';
 import {
   reconcileResourceSampler,
   stopResourceSampler,
@@ -116,6 +117,7 @@ void app.whenReady().then(async () => {
   gitWatcherRegistry.initialize();
   projectSettingsService.initialize();
   prSyncScheduler.initialize();
+  remoteSyncScheduler.initialize();
   appService.initialize();
   await appSettingsService.initialize();
 
@@ -158,6 +160,7 @@ app.on('before-quit', (event) => {
     stopResourceSampler();
     updateService.dispose();
     prSyncScheduler.dispose();
+    remoteSyncScheduler.dispose();
     void gitWatcherRegistry.dispose();
     void projectManager.dispose().catch((e) => {
       log.error('Failed to shutdown project manager:', e);

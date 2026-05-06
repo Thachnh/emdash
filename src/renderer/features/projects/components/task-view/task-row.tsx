@@ -1,6 +1,8 @@
 import { observer } from 'mobx-react-lite';
 import { selectCurrentPr } from '@shared/pull-requests';
 import { type Task } from '@shared/tasks';
+import { LiveAgentDot } from '@renderer/features/remote-sync/live-agent-dot';
+import { useActiveTaskIds } from '@renderer/features/remote-sync/use-active-task-ids';
 import { AgentStatusIndicator } from '@renderer/features/tasks/components/agent-status-indicator';
 import { TaskContextMenu } from '@renderer/features/tasks/components/task-context-menu';
 import { TaskGitDiffStats } from '@renderer/features/tasks/components/task-git-diff-stats';
@@ -58,6 +60,8 @@ export const TaskRow = observer(function TaskRow({
   const currentPr = task.data.prs ? selectCurrentPr(task.data.prs) : undefined;
   const branchName =
     getTaskGitStore(task.data.projectId, task.data.id)?.branchName ?? task.data.taskBranch;
+  const activeTaskIds = useActiveTaskIds(task.data.projectId);
+  const isLiveOnRemote = activeTaskIds.has(task.data.id);
 
   return (
     <TaskContextMenu
@@ -98,6 +102,7 @@ export const TaskRow = observer(function TaskRow({
             <span className="min-w-0 text-left text-sm truncate">{task.data.name}</span>
             <TaskGitDiffStats task={task} className="text-xs shrink-0" />
             {currentPr && <PrBadge pr={currentPr} />}
+            {isLiveOnRemote && <LiveAgentDot className="shrink-0" />}
           </div>
         </div>
         <div className="flex items-center shrink-0 [&>span]:ring-2 [&>span]:ring-background [&>span:not(:first-child)]:-ml-1.5">

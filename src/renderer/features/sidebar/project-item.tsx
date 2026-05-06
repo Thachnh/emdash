@@ -21,6 +21,7 @@ import {
   getRepositoryStore,
   projectViewKind,
 } from '@renderer/features/projects/stores/project-selectors';
+import { RemoteSyncIndicator } from '@renderer/features/remote-sync/remote-sync-indicator';
 import { ConnectionStatusDot } from '@renderer/lib/components/connection-status-dot';
 import {
   useNavigate,
@@ -151,6 +152,7 @@ export const SidebarProjectItem = observer(function SidebarProjectItem({
                 <span className="min-w-0 flex items-center gap-2">
                   <span className="truncate">{project.name}</span>
                   <ConnectionStatusDot state={sshConnectionState} />
+                  <RemoteSyncIndicator projectId={projectId} />
                 </span>
               ) : (
                 <span className="min-w-0 flex items-center gap-1.5">

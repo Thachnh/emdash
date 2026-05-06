@@ -1,7 +1,12 @@
 import { makeObservable, observable, reaction, runInAction, toJS } from 'mobx';
 import { toast } from 'sonner';
 import { prSyncProgressChannel, prUpdatedChannel } from '@shared/events/prEvents';
-import { taskProvisionProgressChannel, taskStatusUpdatedChannel } from '@shared/events/taskEvents';
+import {
+  taskProvisionProgressChannel,
+  tasksRemovedFromSyncChannel,
+  taskStatusUpdatedChannel,
+  tasksUpsertedFromSyncChannel,
+} from '@shared/events/taskEvents';
 import type {
   CreateTaskError,
   CreateTaskParams,
@@ -128,6 +133,8 @@ export class TaskManagerStore {
   private _unsubPrUpdated: (() => void) | null = null;
   private _unsubPrSyncProgress: (() => void) | null = null;
   private _unsubProvisionProgress: (() => void) | null = null;
+  private _unsubTasksUpserted: (() => void) | null = null;
+  private _unsubTasksRemoved: (() => void) | null = null;
   private _disposeRepositoryReaction: (() => void) | null = null;
 
   tasks = observable.map<string, TaskStore>();
@@ -164,6 +171,29 @@ export class TaskManagerStore {
             store.provisionProgressMessage = message;
           });
         }
+      }
+    );
+
+    this._unsubTasksUpserted = events.on(
+      tasksUpsertedFromSyncChannel,
+      ({ projectId: evtProjectId }) => {
+        if (evtProjectId !== this.projectId) return;
+        void this._mergeTasksFromDb();
+      }
+    );
+
+    this._unsubTasksRemoved = events.on(
+      tasksRemovedFromSyncChannel,
+      ({ projectId: evtProjectId, taskIds }) => {
+        if (evtProjectId !== this.projectId) return;
+        runInAction(() => {
+          for (const taskId of taskIds) {
+            const store = this.tasks.get(taskId);
+            if (!store) continue;
+            store.dispose();
+            this.tasks.delete(taskId);
+          }
+        });
       }
     );
 
@@ -221,6 +251,28 @@ export class TaskManagerStore {
         (store.data as Task).prs = prs;
       }
     });
+  }
+
+  /**
+   * Re-fetch tasks from the local DB and add any that aren't already in the
+   * observable map. Used when remote-sync inserts new task rows so the UI
+   * picks them up without an emdash restart. Does not remove or update
+   * existing entries — task lifecycle (rename/archive/etc) is owned by other
+   * channels.
+   */
+  private async _mergeTasksFromDb(): Promise<void> {
+    try {
+      const fresh = await rpc.tasks.getTasks(this.projectId);
+      runInAction(() => {
+        for (const t of fresh) {
+          if (!this.tasks.has(t.id)) {
+            this.tasks.set(t.id, createUnprovisionedTask(t));
+          }
+        }
+      });
+    } catch (e) {
+      console.warn('TaskManagerStore: _mergeTasksFromDb failed', e);
+    }
   }
 
   loadTasks(): Promise<void> {
@@ -626,6 +678,10 @@ export class TaskManagerStore {
     this._unsubPrSyncProgress = null;
     this._unsubProvisionProgress?.();
     this._unsubProvisionProgress = null;
+    this._unsubTasksUpserted?.();
+    this._unsubTasksUpserted = null;
+    this._unsubTasksRemoved?.();
+    this._unsubTasksRemoved = null;
     this._disposeRepositoryReaction?.();
     this._disposeRepositoryReaction = null;
   }

@@ -28,3 +28,22 @@ export const taskProvisionProgressChannel = defineEvent<{
   step: ProvisionStep;
   message: string;
 }>('task:provision-progress');
+
+/**
+ * Emitted when tasks have been inserted/updated by remote-sync. Tells the
+ * renderer's TaskManagerStore to reload from the local DB so newly-synced
+ * tasks appear in the UI without an emdash restart.
+ */
+export const tasksUpsertedFromSyncChannel = defineEvent<{
+  projectId: string;
+}>('task:upserted-from-sync');
+
+/**
+ * Emitted when remote-sync deletes tasks from the local DB (because another
+ * client tombstoned them). The renderer's TaskManagerStore removes them from
+ * its observable map.
+ */
+export const tasksRemovedFromSyncChannel = defineEvent<{
+  projectId: string;
+  taskIds: string[];
+}>('task:removed-from-sync');
