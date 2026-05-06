@@ -20,6 +20,7 @@ import { projectController } from './core/projects/controller';
 import { promptLibraryController } from './core/prompt-library/controller';
 import { ptyController } from './core/pty/controller';
 import { pullRequestController } from './core/pull-requests/controller';
+import { remoteSyncController } from './core/remote-sync/controller';
 import { repositoryController } from './core/repository/controller';
 import { resourceMonitorController } from './core/resource-monitor/controller';
 import { searchController } from './core/search/controller';
@@ -69,6 +70,7 @@ export const rpcRouter = createRPCRouter({
   editorBuffer: editorBufferController,
   telemetry: telemetryController,
   pullRequests: pullRequestController,
+  remoteSync: remoteSyncController,
   viewState: viewStateController,
   search: searchController,
   workspaces: workspaceController,

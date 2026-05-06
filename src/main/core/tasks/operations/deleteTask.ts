@@ -1,5 +1,6 @@
 import { eq } from 'drizzle-orm';
 import { projectManager } from '@main/core/projects/project-manager';
+import { recordTaskDeletion } from '@main/core/remote-sync/tombstones';
 import { taskManager } from '@main/core/tasks/task-manager';
 import { viewStateService } from '@main/core/view-state/view-state-service';
 import { db } from '@main/db/client';
@@ -44,6 +45,9 @@ export async function deleteTask(
 
   await db.delete(tasks).where(eq(tasks.id, taskId));
   void viewStateService.del(`task:${taskId}`);
+  // Record a tombstone so remote-sync propagates the deletion to other
+  // clients and refuses to re-insert this task on the next pull.
+  await recordTaskDeletion(projectId, taskId);
   telemetryService.capture('task_deleted', { project_id: projectId, task_id: taskId });
 
   if (project && deleteWorktree) {
