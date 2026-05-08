@@ -28,6 +28,10 @@ export class SshConversationProvider implements ConversationProvider {
   private sessions = new Map<string, Pty>();
   private knownSessionIds = new Set<string>();
   private respawnCounts = new Map<string, number>();
+  /** In-flight startSession promises keyed by sessionId. Prevents rehydrate()
+   *  from racing the initial hydrate (or itself) and doubling SSH channel
+   *  pressure while the first attempt is still retrying through openSsh2Pty. */
+  private startPromises = new Map<string, Promise<void>>();
   /** Tracks conversations that should be running so rehydrate() can re-spawn
    *  any whose initial PTY hydrate failed (e.g. SSH MaxSessions saturation). */
   private conversations = new Map<string, Conversation>();
@@ -84,7 +88,31 @@ export class SshConversationProvider implements ConversationProvider {
     this.conversations.set(conversation.id, conversation);
 
     if (this.sessions.has(sessionId)) return;
+    const inFlight = this.startPromises.get(sessionId);
+    if (inFlight) return inFlight;
 
+    const promise = this._spawnSession(
+      conversation,
+      sessionId,
+      initialSize,
+      isResuming,
+      initialPrompt
+    );
+    this.startPromises.set(sessionId, promise);
+    try {
+      await promise;
+    } finally {
+      this.startPromises.delete(sessionId);
+    }
+  }
+
+  private async _spawnSession(
+    conversation: Conversation,
+    sessionId: string,
+    initialSize: { cols: number; rows: number },
+    isResuming: boolean,
+    initialPrompt: string | undefined
+  ): Promise<void> {
     await claudeTrustService.maybeAutoTrustSsh({
       providerId: conversation.providerId,
       cwd: this.taskPath,

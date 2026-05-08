@@ -33,6 +33,7 @@ export class LocalConversationProvider implements ConversationProvider {
   private sessions = new Map<string, Pty>();
   private knownSessionIds = new Set<string>();
   private respawnCounts = new Map<string, number>();
+  private startPromises = new Map<string, Promise<void>>();
   private conversations = new Map<string, Conversation>();
   private readonly projectId: string;
   private readonly taskPath: string;
@@ -85,7 +86,31 @@ export class LocalConversationProvider implements ConversationProvider {
     this.knownSessionIds.add(sessionId);
     this.conversations.set(conversation.id, conversation);
     if (this.sessions.has(sessionId)) return;
+    const inFlight = this.startPromises.get(sessionId);
+    if (inFlight) return inFlight;
 
+    const promise = this._spawnSession(
+      conversation,
+      sessionId,
+      initialSize,
+      isResuming,
+      initialPrompt
+    );
+    this.startPromises.set(sessionId, promise);
+    try {
+      await promise;
+    } finally {
+      this.startPromises.delete(sessionId);
+    }
+  }
+
+  private async _spawnSession(
+    conversation: Conversation,
+    sessionId: string,
+    initialSize: { cols: number; rows: number },
+    isResuming: boolean,
+    initialPrompt: string | undefined
+  ): Promise<void> {
     await claudeTrustService.maybeAutoTrustLocal({
       providerId: conversation.providerId,
       cwd: this.taskPath,
