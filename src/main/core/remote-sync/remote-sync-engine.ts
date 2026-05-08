@@ -18,6 +18,7 @@ import { RemoteSyncStore } from './remote-sync-store';
 import { applyMergedToLocalDb } from './snapshot-applier';
 import { buildLocalSnapshot } from './snapshot-builder';
 import { mergeSnapshots, type MergedSnapshot } from './snapshot-merger';
+import { getTaskTombstones } from './tombstones';
 
 export type AdoptArgs = {
   proxy: SshClientProxy;
@@ -128,6 +129,7 @@ export class RemoteSyncEngine {
     state.status.inflight = 'pulling';
     try {
       const merged = await this._readAndMerge(state.store, state.clientId);
+      await this._applyLocalTombstones(projectId, merged);
       await applyMergedToLocalDb(projectId, merged);
       state.status.lastPullAt = new Date().toISOString();
       state.status.lastError = null;
@@ -240,6 +242,20 @@ export class RemoteSyncEngine {
       if (snap) snapshots.push(snap);
     }
     return mergeSnapshots(snapshots);
+  }
+
+  /**
+   * Union our local tombstones into the merged result before applying.
+   * Without this, a delete on this client would not stop other clients'
+   * (still-stale) snapshots from re-inserting the task on our next pull —
+   * the merge skips our own snapshot, so our tombstones never reach the
+   * filter step. Re-filters merged.tasks since deletedTaskIds is widened.
+   */
+  private async _applyLocalTombstones(projectId: string, merged: MergedSnapshot): Promise<void> {
+    const local = await getTaskTombstones(projectId);
+    if (local.length === 0) return;
+    for (const t of local) merged.deletedTaskIds.add(t.id);
+    merged.tasks = merged.tasks.filter((t) => !merged.deletedTaskIds.has(t.id));
   }
 
   private async _buildState(projectId: string): Promise<Result<EngineState, EngineError>> {
