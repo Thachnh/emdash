@@ -23,6 +23,10 @@ export async function provisionTask(taskId: string) {
   const existingTask = taskManager.getTask(taskId);
 
   if (existingTask) {
+    // Re-spawn any conversation whose PTY is missing (e.g. initial hydrate
+    // failed under SSH MaxSessions saturation). Idempotent — conversations
+    // with a live PTY are skipped.
+    void existingTask.conversations.rehydrate();
     const persistData = taskManager.getPersistData(taskId);
     const wsId = persistData?.workspaceId ?? '';
     return {

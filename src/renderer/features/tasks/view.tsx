@@ -50,13 +50,18 @@ const TaskViewWrapperWithProviders = observer(function TaskViewWrapperWithProvid
   // Auto-provision when the task view is rendered with an idle task — covers
   // session restore where the task wasn't in openTaskIds, direct navigation,
   // and any other path that lands on the task view before provisioning runs.
+  // For already-provisioned tasks, ping the server so it rehydrates any
+  // conversation PTY that failed to spawn at initial hydrate time (e.g. SSH
+  // MaxSessions saturation).
   useEffect(() => {
-    if (kind !== 'idle') return;
     if (taskStore && 'archivedAt' in taskStore.data && taskStore.data.archivedAt) return;
-
-    getTaskManagerStore(projectId)
-      ?.provisionTask(taskId)
-      .catch(() => {});
+    if (kind === 'idle') {
+      getTaskManagerStore(projectId)
+        ?.provisionTask(taskId)
+        .catch(() => {});
+    } else if (kind === 'ready') {
+      void getTaskManagerStore(projectId)?.ensureSessionsHealthy(taskId);
+    }
   }, [kind, projectId, taskId, taskStore]);
 
   if (kind !== 'ready') {

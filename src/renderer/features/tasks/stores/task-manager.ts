@@ -366,6 +366,20 @@ export class TaskManagerStore {
     );
   }
 
+  /**
+   * Re-run server-side task provisioning to recover any conversations whose
+   * initial PTY hydrate failed (commonly SSH MaxSessions saturation). The
+   * server short-circuits when the task is already provisioned and just
+   * rehydrates missing conversation PTYs — idempotent and cheap.
+   */
+  async ensureSessionsHealthy(taskId: string): Promise<void> {
+    try {
+      await rpc.tasks.provisionTask(taskId);
+    } catch (e) {
+      console.warn('TaskManagerStore: ensureSessionsHealthy failed', e);
+    }
+  }
+
   async provisionTask(taskId: string): Promise<void> {
     await getProjectManagerStore().mountProject(this.projectId);
     await this.loadTasks();

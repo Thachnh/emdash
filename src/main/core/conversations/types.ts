@@ -8,6 +8,13 @@ export interface ConversationProvider {
     initialPrompt?: string
   ): Promise<void>;
   stopSession(conversationId: string): Promise<void>;
+  /**
+   * Re-spawn any tracked conversation whose PTY is no longer running.
+   * Idempotent — conversations that already have a live session are skipped.
+   * Used to recover from initial-hydrate failures (e.g. SSH MaxSessions
+   * saturation) and from SSH reconnects.
+   */
+  rehydrate(): Promise<void>;
   destroyAll(): Promise<void>;
   detachAll(): Promise<void>;
 }

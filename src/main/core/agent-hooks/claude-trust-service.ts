@@ -60,16 +60,27 @@ export class ClaudeTrustService {
     if (!cwd) return;
     if (!(await this.shouldAutoTrust(providerId))) return;
 
-    const normalizedPath = await remoteFs.realPath(cwd).catch(() => path.posix.resolve('/', cwd));
-    const homeDir = await resolveRemoteHome(ctx);
-    const configPath = path.posix.join(homeDir, CLAUDE_CONFIG_NAME);
+    // The trust setup is best-effort: if remote IO fails (commonly
+    // "Channel open failure: open failed" when MaxSessions is saturated),
+    // skip auto-trust rather than failing the whole conversation start.
+    // Claude Code will fall back to its interactive trust dialog.
+    try {
+      const normalizedPath = await remoteFs.realPath(cwd).catch(() => path.posix.resolve('/', cwd));
+      const homeDir = await resolveRemoteHome(ctx);
+      const configPath = path.posix.join(homeDir, CLAUDE_CONFIG_NAME);
 
-    await this.withLock(configPath, () =>
-      this.ensureTrusted(normalizedPath, {
-        readConfig: () => readRemoteConfig(remoteFs, configPath),
-        writeConfig: (content) => writeRemoteConfigAtomic(remoteFs, ctx, configPath, content),
-      })
-    );
+      await this.withLock(configPath, () =>
+        this.ensureTrusted(normalizedPath, {
+          readConfig: () => readRemoteConfig(remoteFs, configPath),
+          writeConfig: (content) => writeRemoteConfigAtomic(remoteFs, ctx, configPath, content),
+        })
+      );
+    } catch (error: unknown) {
+      log.warn('ClaudeTrustService: skipping SSH auto-trust (remote IO failed)', {
+        cwd,
+        error: String(error),
+      });
+    }
   }
 
   private async shouldAutoTrust(providerId: AgentProviderId): Promise<boolean> {

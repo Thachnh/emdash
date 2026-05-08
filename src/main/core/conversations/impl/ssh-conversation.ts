@@ -28,6 +28,9 @@ export class SshConversationProvider implements ConversationProvider {
   private sessions = new Map<string, Pty>();
   private knownSessionIds = new Set<string>();
   private respawnCounts = new Map<string, number>();
+  /** Tracks conversations that should be running so rehydrate() can re-spawn
+   *  any whose initial PTY hydrate failed (e.g. SSH MaxSessions saturation). */
+  private conversations = new Map<string, Conversation>();
   private readonly projectId: string;
   private readonly taskPath: string;
   private readonly taskId: string;
@@ -78,6 +81,7 @@ export class SshConversationProvider implements ConversationProvider {
       conversation.id
     );
     this.knownSessionIds.add(sessionId);
+    this.conversations.set(conversation.id, conversation);
 
     if (this.sessions.has(sessionId)) return;
 
@@ -207,6 +211,7 @@ export class SshConversationProvider implements ConversationProvider {
   async stopSession(conversationId: string): Promise<void> {
     const sessionId = makePtySessionId(this.projectId, this.taskId, conversationId);
     this.knownSessionIds.delete(sessionId);
+    this.conversations.delete(conversationId);
     const pty = this.sessions.get(sessionId);
     if (pty) {
       try {
@@ -222,6 +227,26 @@ export class SshConversationProvider implements ConversationProvider {
     }
   }
 
+  async rehydrate(): Promise<void> {
+    const conversations = Array.from(this.conversations.values());
+    await Promise.all(
+      conversations.map(async (conversation) => {
+        const sessionId = makePtySessionId(
+          conversation.projectId,
+          conversation.taskId,
+          conversation.id
+        );
+        if (this.sessions.has(sessionId)) return;
+        await this.startSession(conversation, undefined, true).catch((e: unknown) => {
+          log.error('SshConversationProvider: rehydrate failed', {
+            conversationId: conversation.id,
+            error: String(e),
+          });
+        });
+      })
+    );
+  }
+
   async destroyAll(): Promise<void> {
     const sessionIds = Array.from(this.knownSessionIds);
     await this.detachAll();
@@ -229,6 +254,7 @@ export class SshConversationProvider implements ConversationProvider {
       await Promise.all(sessionIds.map((id) => killTmuxSession(this.ctx, makeTmuxSessionName(id))));
     }
     this.knownSessionIds.clear();
+    this.conversations.clear();
   }
 
   async detachAll(): Promise<void> {

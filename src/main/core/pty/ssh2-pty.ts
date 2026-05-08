@@ -15,6 +15,9 @@ export interface Ssh2SpawnOptions extends PtyDimensions {
   command: string;
 }
 
+/** Backoff (ms) between retries when the server refuses a new channel — typically MaxSessions saturation. */
+const CHANNEL_OPEN_RETRY_DELAYS_MS = [500, 1_000, 2_000, 4_000];
+
 export class Ssh2PtySession implements Pty {
   readonly id: string;
 
@@ -60,7 +63,7 @@ export class Ssh2PtySession implements Pty {
   }
 }
 
-export async function openSsh2Pty(
+function tryOpenSsh2PtyOnce(
   proxy: SshClientProxy,
   options: Ssh2SpawnOptions
 ): Promise<Result<Ssh2PtySession, Ssh2OpenError>> {
@@ -87,4 +90,22 @@ export async function openSsh2Pty(
       }
     );
   });
+}
+
+export async function openSsh2Pty(
+  proxy: SshClientProxy,
+  options: Ssh2SpawnOptions
+): Promise<Result<Ssh2PtySession, Ssh2OpenError>> {
+  let result = await tryOpenSsh2PtyOnce(proxy, options);
+  for (const delay of CHANNEL_OPEN_RETRY_DELAYS_MS) {
+    if (result.success) return result;
+    log.warn('openSsh2Pty: SSH channel open refused, retrying', {
+      id: options.id,
+      delayMs: delay,
+      error: result.error.message,
+    });
+    await new Promise<void>((r) => setTimeout(r, delay));
+    result = await tryOpenSsh2PtyOnce(proxy, options);
+  }
+  return result;
 }
