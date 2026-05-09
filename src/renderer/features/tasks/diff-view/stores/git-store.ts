@@ -16,56 +16,68 @@ export class GitStore {
   constructor(
     private readonly projectId: string,
     private readonly workspaceId: string,
-    private readonly repositoryStore: RepositoryStore
+    private readonly repositoryStore: RepositoryStore,
+    isSsh: boolean = false
   ) {
-    this.fullStatus = new Resource<FullGitStatus>(
-      () => this._fetchFullStatus(),
-      [
-        {
-          kind: 'event',
-          subscribe: (handler) =>
-            events.on(gitWorkspaceChangedChannel, (payload) => {
-              if (payload.workspaceId === this.workspaceId && payload.kind === 'head') {
-                handler();
-              }
-            }),
-          onEvent: 'reload',
-          debounceMs: 100,
-        },
-        {
-          kind: 'event',
-          subscribe: (handler) =>
-            events.on(gitWorkspaceChangedChannel, (payload) => {
-              if (payload.workspaceId === this.workspaceId && payload.kind === 'index') {
-                handler();
-              }
-            }),
-          onEvent: 'reload',
-          debounceMs: 300,
-        },
-        {
-          kind: 'event',
-          subscribe: (handler) => {
-            rpc.fs.watchSetPaths(projectId, workspaceId, [''], 'git-store-status').catch(() => {});
-            const unsub = events.on(fsWatchEventChannel, (payload) => {
-              if (payload.workspaceId !== workspaceId) return;
-              const relevant = payload.events.some((e) => {
-                if (e.path.startsWith('.git')) return false;
-                if (e.oldPath?.startsWith('.git')) return false;
-                return true;
-              });
-              if (relevant) handler();
+    const strategies: ConstructorParameters<typeof Resource<FullGitStatus>>[1] = [
+      {
+        kind: 'event',
+        subscribe: (handler) =>
+          events.on(gitWorkspaceChangedChannel, (payload) => {
+            if (payload.workspaceId === this.workspaceId && payload.kind === 'head') {
+              handler();
+            }
+          }),
+        onEvent: 'reload',
+        debounceMs: 100,
+      },
+      {
+        kind: 'event',
+        subscribe: (handler) =>
+          events.on(gitWorkspaceChangedChannel, (payload) => {
+            if (payload.workspaceId === this.workspaceId && payload.kind === 'index') {
+              handler();
+            }
+          }),
+        onEvent: 'reload',
+        debounceMs: 300,
+      },
+      {
+        kind: 'event',
+        subscribe: (handler) => {
+          rpc.fs.watchSetPaths(projectId, workspaceId, [''], 'git-store-status').catch(() => {});
+          const unsub = events.on(fsWatchEventChannel, (payload) => {
+            if (payload.workspaceId !== workspaceId) return;
+            const relevant = payload.events.some((e) => {
+              if (e.path.startsWith('.git')) return false;
+              if (e.oldPath?.startsWith('.git')) return false;
+              return true;
             });
-            return () => {
-              unsub();
-              rpc.fs.watchStop(projectId, workspaceId, 'git-store-status').catch(() => {});
-            };
-          },
-          onEvent: 'reload',
-          debounceMs: 500,
+            if (relevant) handler();
+          });
+          return () => {
+            unsub();
+            rpc.fs.watchStop(projectId, workspaceId, 'git-store-status').catch(() => {});
+          };
         },
-      ]
-    );
+        onEvent: 'reload',
+        debounceMs: 500,
+      },
+    ];
+
+    // SSH workspaces have no parcel/watcher on the remote .git dir, and the
+    // SSH FS poll only emits create/delete events — so file modifications
+    // produce no signal. Poll git status while the diff panel is visible.
+    if (isSsh) {
+      strategies.push({
+        kind: 'poll',
+        intervalMs: 8_000,
+        pauseWhenHidden: true,
+        demandGated: true,
+      });
+    }
+
+    this.fullStatus = new Resource<FullGitStatus>(() => this._fetchFullStatus(), strategies);
 
     makeObservable(this, {
       fileChanges: computed,
