@@ -67,6 +67,31 @@ export class SshConnectionManager extends EventEmitter {
   private healthStates: Map<string, SshHealthState> = new Map();
 
   /**
+   * Pending health-recovery probes per connection. The upstream gate flips
+   * a connection to `degraded` on a single channel-open failure but only
+   * clears it on a successful task provision — so a transient MaxSessions
+   * saturation during startup can leave the project view permanently
+   * blocked. We probe `exec('true')` on a backoff until one succeeds, then
+   * clear the flag.
+   */
+  private healthProbes: Map<string, { timer: NodeJS.Timeout; attempt: number }> = new Map();
+
+  /**
+   * Sliding-window timestamps of recent channel-open failures per connection.
+   * Used so a single transient error doesn't immediately flip degraded —
+   * required to avoid panel flashing while several background ops race
+   * against MaxSessions.
+   */
+  private failureTimes: Map<string, number[]> = new Map();
+
+  /**
+   * Last time we cleared health for a connection. Failures arriving within
+   * POST_RECOVERY_SUPPRESS_MS of recovery are likely in-flight requests that
+   * were already queued before recovery — ignore them.
+   */
+  private recoveredAt: Map<string, number> = new Map();
+
+  /**
    * IDs for which disconnect() was called — these are excluded from
    * auto-reconnect so an intentional teardown is never silently restarted.
    */
@@ -149,12 +174,98 @@ export class SshConnectionManager extends EventEmitter {
   reportChannelError(connectionId: string, error: unknown): void {
     if (!isSshChannelOpenFailure(error)) return;
 
+    const now = Date.now();
+
+    // Suppress new degraded flags briefly after a successful recovery —
+    // anything failing this soon was almost certainly in-flight before
+    // the probe succeeded, not a fresh saturation event.
+    const recovered = this.recoveredAt.get(connectionId);
+    if (recovered !== undefined && now - recovered < SshConnectionManager.POST_RECOVERY_SUPPRESS_MS) {
+      return;
+    }
+
+    // Sliding window — only flag degraded once we've seen enough failures
+    // in a short window to count as sustained pressure.
+    const recent = (this.failureTimes.get(connectionId) ?? []).filter(
+      (t) => now - t < SshConnectionManager.DEGRADE_WINDOW_MS
+    );
+    recent.push(now);
+    this.failureTimes.set(connectionId, recent);
+
+    if (recent.length < SshConnectionManager.DEGRADE_FAILURES_THRESHOLD) {
+      return;
+    }
+
+    if (this.healthStates.get(connectionId)?.status === 'degraded') {
+      // Already degraded — probe already running, nothing to do.
+      return;
+    }
+
     this.healthStates.set(connectionId, { status: 'degraded' });
     this.emitHealthChanged(connectionId, { status: 'degraded' });
+    this.scheduleHealthProbe(connectionId);
   }
 
   reportChannelRecovered(connectionId: string): void {
     this.clearHealthState(connectionId);
+  }
+
+  /** Delays (ms) between successive recovery probes after a channel failure. */
+  private static readonly HEALTH_PROBE_DELAYS_MS = [
+    1_000, 2_000, 4_000, 8_000, 15_000, 30_000, 60_000,
+  ];
+
+  /** Number of failures within DEGRADE_WINDOW_MS required to flag degraded. */
+  private static readonly DEGRADE_FAILURES_THRESHOLD = 4;
+
+  /** Sliding window for the failure threshold. */
+  private static readonly DEGRADE_WINDOW_MS = 4_000;
+
+  /** After a recovery, ignore new failure reports for this long. */
+  private static readonly POST_RECOVERY_SUPPRESS_MS = 5_000;
+
+  private scheduleHealthProbe(connectionId: string): void {
+    if (this.healthProbes.has(connectionId)) return;
+
+    const run = (attempt: number) => {
+      const proxy = this.proxies.get(connectionId);
+      if (!proxy?.isConnected) {
+        this.healthProbes.delete(connectionId);
+        return;
+      }
+      if (this.healthStates.get(connectionId)?.status !== 'degraded') {
+        this.healthProbes.delete(connectionId);
+        return;
+      }
+
+      proxy.client.exec('true', (err, channel) => {
+        if (err) {
+          const delays = SshConnectionManager.HEALTH_PROBE_DELAYS_MS;
+          const next = Math.min(attempt + 1, delays.length - 1);
+          const timer = setTimeout(() => run(next), delays[next]);
+          this.healthProbes.set(connectionId, { timer, attempt: next });
+          return;
+        }
+        channel.once('close', () => {});
+        try {
+          channel.end();
+        } catch {}
+        this.healthProbes.delete(connectionId);
+        this.clearHealthState(connectionId);
+      });
+    };
+
+    const delay = SshConnectionManager.HEALTH_PROBE_DELAYS_MS[0];
+    const timer = setTimeout(() => run(0), delay);
+    this.healthProbes.set(connectionId, { timer, attempt: 0 });
+  }
+
+  private cancelHealthProbe(connectionId: string): void {
+    const probe = this.healthProbes.get(connectionId);
+    if (probe) {
+      clearTimeout(probe.timer);
+      this.healthProbes.delete(connectionId);
+    }
   }
 
   /**
@@ -164,6 +275,7 @@ export class SshConnectionManager extends EventEmitter {
   async disconnect(id: string): Promise<void> {
     this.intentionalDisconnects.add(id);
     this.cancelReconnect(id);
+    this.cancelHealthProbe(id);
 
     const proxy = this.proxies.get(id);
     if (!proxy?.isConnected) {
@@ -281,6 +393,7 @@ export class SshConnectionManager extends EventEmitter {
         // Only react if this client is still the one backing the proxy.
         if (proxy.isConnected && proxy.client === client) {
           proxy.invalidate();
+          this.cancelHealthProbe(id);
 
           this.emit('connection-event', {
             type: 'disconnected',
@@ -418,6 +531,8 @@ export class SshConnectionManager extends EventEmitter {
     if (this.healthStates.delete(connectionId)) {
       this.emitHealthChanged(connectionId, health);
     }
+    this.recoveredAt.set(connectionId, Date.now());
+    this.failureTimes.delete(connectionId);
     return health;
   }
 
